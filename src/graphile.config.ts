@@ -2,7 +2,7 @@ import { PostGraphileAmberPreset } from "postgraphile/presets/amber";
 import { makeV4Preset } from "postgraphile/presets/v4";
 import { makePgService } from "postgraphile/adaptors/pg";
 import { Pool } from "pg";
-import { PgMutationCreateWithConflictsPlugin } from "./plugin";
+import { ErrorsAsDataPlugin } from "./plugin";
 
 const pool = new Pool({
   database: process.env.DB_NAME || "library",
@@ -31,8 +31,11 @@ const preset: GraphileConfig.Preset = {
     }),
   ],
 
-  plugins: [PgMutationCreateWithConflictsPlugin],
-  disablePlugins: ["PgMutationCreatePlugin", "PgMutationUpdateDeletePlugin"],
+  plugins: [ErrorsAsDataPlugin],
+  disablePlugins: [
+    "PgMutationCreatePlugin",
+    //"PgMutationUpdateDeletePlugin",
+  ],
 
   pgServices: [
     makePgService({

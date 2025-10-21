@@ -16,7 +16,7 @@ import { gatherConfig } from "graphile-build";
 import { DatabaseError } from "pg";
 
 /**
- * PgMutationCreateWithConflictsPlugin
+ * ErrorsAsDataPlugin
  *
  * This plugin provides enhanced create mutations that handle database constraint
  * violations gracefully using GraphQL union types instead of throwing errors.
@@ -125,7 +125,7 @@ interface ConstraintInfo {
 declare global {
   namespace GraphileConfig {
     interface Plugins {
-      PgMutationCreateWithConflictsPlugin: true;
+      ErrorsAsDataPlugin: true;
     }
     interface GatherHelpers {
       pgMutationCreateWithConflicts: {
@@ -342,7 +342,7 @@ const registerInputType = (
         };
       },
     }),
-    `PgMutationCreateWithConflictsPlugin input for ${resource.name}`
+    `ErrorsAsDataPlugin input for ${resource.name}`
   );
 };
 
@@ -369,7 +369,7 @@ const registerConflictType = (
       ),
       fields: createConflictFields(build),
     }),
-    `PgMutationCreateWithConflictsPlugin conflict type for ${resource.name}`
+    `ErrorsAsDataPlugin conflict type for ${resource.name}`
   );
 };
 
@@ -509,7 +509,7 @@ const registerResultUnionType = (
         [get, lambda, list, tableTypeName, constraintToTypeName]
       ),
     }),
-    `PgMutationCreateWithConflictsPlugin result union for ${resource.name}`
+    `ErrorsAsDataPlugin result union for ${resource.name}`
   );
 };
 
@@ -580,11 +580,11 @@ const registerPayloadType = (
         };
       },
     }),
-    `PgMutationCreateWithConflictsPlugin payload for ${resource.name}`
+    `ErrorsAsDataPlugin payload for ${resource.name}`
   );
 };
 
-// PgMutationCreateWithConflictsPlugin generates GraphQL create mutations that
+// ErrorsAsDataPlugin generates GraphQL create mutations that
 // return a union type of either the created record or conflict details, instead
 // of throwing errors when database constraints are violated.
 //
@@ -597,8 +597,8 @@ const registerPayloadType = (
 // When an insert succeeds, the mutation returns the created record.
 // When a constraint is violated (e.g., unique constraint, foreign key), the mutation
 // returns conflict details instead of raising a GraphQL error.
-export const PgMutationCreateWithConflictsPlugin: GraphileConfig.Plugin = {
-  name: "PgMutationCreateWithConflictsPlugin",
+export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
+  name: "ErrorsAsDataPlugin",
   description:
     "Adds create mutations that return a union of the created record or constraint conflict details",
   version: "0.1.0",
