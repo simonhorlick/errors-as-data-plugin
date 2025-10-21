@@ -11,7 +11,6 @@ import type {
 } from "grafast";
 import { assertExecutableStep, isPromiseLike } from "grafast";
 import type { GraphQLObjectType } from "grafast/graphql";
-import { EXPORTABLE } from "graphile-build";
 import { gatherConfig } from "graphile-build";
 import { DatabaseError } from "pg";
 
@@ -238,13 +237,9 @@ const createConflictFields = (build: GraphileBuild.Build) => {
         "Human-readable description of the conflict.",
         "field"
       ),
-      plan: EXPORTABLE(
-        () =>
-          function plan($conflict: ObjectStep) {
-            return $conflict.get("message");
-          },
-        []
-      ),
+      plan($conflict: ObjectStep) {
+        return $conflict.get("message");
+      },
     })),
   });
 };
@@ -275,13 +270,9 @@ const registerInputType = (
         return {
           clientMutationId: {
             type: GraphQLString,
-            apply: EXPORTABLE(
-              () =>
-                function apply(qb: PgInsertSingleQueryBuilder, val) {
-                  qb.setMeta("clientMutationId", val);
-                },
-              []
-            ),
+            apply(qb: PgInsertSingleQueryBuilder, val: any) {
+              qb.setMeta("clientMutationId", val);
+            },
           },
           ...(isInputType(TableInput)
             ? {
@@ -296,15 +287,11 @@ const registerInputType = (
                       "field"
                     ),
                     type: new GraphQLNonNull(TableInput),
-                    apply: EXPORTABLE(
-                      () =>
-                        function plan(qb: PgInsertSingleQueryBuilder, arg) {
-                          if (arg != null) {
-                            return qb.setBuilder();
-                          }
-                        },
-                      []
-                    ),
+                    apply(qb: PgInsertSingleQueryBuilder, arg: any) {
+                      if (arg != null) {
+                        return qb.setBuilder();
+                      }
+                    },
                   })
                 ),
               }
@@ -426,58 +413,54 @@ const registerResultUnionType = (
       // planType determines which type (table or constraint-specific conflict)
       // should be returned for a given result by examining the constraint name
       // in the error.
-      planType: EXPORTABLE(
-        (get, lambda, list, tableTypeName, constraintToTypeName) =>
-          function planType($specifier: Step<StepType>) {
-            const $row = get($specifier, "row");
-            const $conflict = get($specifier, "conflict");
-            const $insert = get($specifier, "insert");
-            const $conflictMessage = get($conflict, "message");
-            const $constraintName = get($conflict, "constraint");
+      planType($specifier: Step<StepType>) {
+        const $row = get($specifier, "row");
+        const $conflict = get($specifier, "conflict");
+        const $insert = get($specifier, "insert");
+        const $conflictMessage = get($conflict, "message");
+        const $constraintName = get($conflict, "constraint");
 
-            // Determine the __typename by examining the constraint name.
-            // If there's a conflict, map the constraint name to the appropriate
-            // conflict type. Otherwise, return the table type for successful inserts.
-            const $__typename = lambda(
-              list([$conflictMessage, $constraintName, $row]),
-              ([conflictMessage, constraintName, row]) => {
-                if (constraintName != null) {
-                  // Look up the constraint-specific type name.
-                  const conflictTypeName =
-                    constraintToTypeName.get(constraintName);
-                  if (!conflictTypeName) {
-                    throw new Error(
-                      `Unknown constraint '${constraintName}' for table '${tableTypeName}'`
-                    );
-                  }
+        // Determine the __typename by examining the constraint name.
+        // If there's a conflict, map the constraint name to the appropriate
+        // conflict type. Otherwise, return the table type for successful inserts.
+        const $__typename = lambda(
+          list([$conflictMessage, $constraintName, $row]),
+          ([conflictMessage, constraintName, row]: readonly [any, any, any]) => {
+            if (constraintName != null) {
+              // Look up the constraint-specific type name.
+              const conflictTypeName =
+                constraintToTypeName.get(constraintName);
+              if (!conflictTypeName) {
+                throw new Error(
+                  `Unknown constraint '${constraintName}' for table '${tableTypeName}'`
+                );
+              }
 
-                  return conflictTypeName;
-                } else {
-                  // Success type.
-                  return tableTypeName;
-                }
-              },
-              true
-            );
-            return {
-              $__typename,
-
-              // planForType returns the appropriate step for each union member type.
-              // For the table type (successful insert), we return $insert which
-              // provides proper field access to the inserted row's columns.
-              // For any conflict type, we return $conflict which contains the
-              // constraint violation details.
-              planForType(t) {
-                if (t.name === tableTypeName) {
-                  return $insert;
-                }
-                // All conflict types use the same $conflict step.
-                return $conflict;
-              },
-            };
+              return conflictTypeName;
+            } else {
+              // Success type.
+              return tableTypeName;
+            }
           },
-        [get, lambda, list, tableTypeName, constraintToTypeName]
-      ),
+          true
+        );
+        return {
+          $__typename,
+
+          // planForType returns the appropriate step for each union member type.
+          // For the table type (successful insert), we return $insert which
+          // provides proper field access to the inserted row's columns.
+          // For any conflict type, we return $conflict which contains the
+          // constraint violation details.
+          planForType(t: any) {
+            if (t.name === tableTypeName) {
+              return $insert;
+            }
+            // All conflict types use the same $conflict step.
+            return $conflict;
+          },
+        };
+      },
     }),
     `ErrorsAsDataPlugin result union for ${resource.name}`
   );
@@ -511,17 +494,9 @@ const registerPayloadType = (
         return {
           clientMutationId: {
             type: GraphQLString,
-            plan: EXPORTABLE(
-              () =>
-                function plan(
-                  $mutation: ObjectStep<{
-                    clientMutationId: any;
-                  }>
-                ) {
-                  return $mutation.get("clientMutationId");
-                },
-              []
-            ),
+            plan($mutation: any) {
+              return $mutation.get("clientMutationId");
+            },
           },
           ...(resultType
             ? {
@@ -536,13 +511,9 @@ const registerPayloadType = (
                       "field"
                     ),
                     type: resultType,
-                    plan: EXPORTABLE(
-                      () =>
-                        function plan($payload: ObjectStep<any>) {
-                          return $payload.get("result");
-                        },
-                      []
-                    ),
+                    plan($payload: any) {
+                      return $payload.get("result");
+                    },
                   })
                 ),
               }
@@ -862,13 +833,9 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                     args: {
                       input: {
                         type: new GraphQLNonNull(mutationInputType),
-                        applyPlan: EXPORTABLE(
-                          () =>
-                            function plan(_: any, $object: ObjectStep<any>) {
-                              return $object;
-                            },
-                          []
-                        ),
+                        applyPlan(_: any, $object: any) {
+                          return $object;
+                        },
                       },
                     },
                     type: payloadType,
@@ -879,154 +846,131 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
 
                     // The plan function executes during query planning and sets up the
                     // steps needed to handle both successful inserts and constraint violations.
-                    plan: EXPORTABLE(
-                      (
-                        object,
-                        SafePgInsertSingleStep,
+                    plan(_: any, args: FieldArgs) {
+                      // Create a SafePgInsertSingleStep to perform the database insert.
+                      // This custom step catches promise rejections and converts them
+                      // to regular values so errors don't propagate to the GraphQL errors array.
+                      const $insert = new SafePgInsertSingleStep(
                         resource,
-                        trap,
-                        TRAP_ERROR,
-                        lambda,
-                        get,
-                        analyseInsertError
-                      ) =>
-                        function plan(_: any, args: FieldArgs) {
-                          // Create a SafePgInsertSingleStep to perform the database insert.
-                          // This custom step catches promise rejections and converts them
-                          // to regular values so errors don't propagate to the GraphQL errors array.
-                          const $insert = new SafePgInsertSingleStep(
-                            resource,
-                            Object.create(null)
-                          );
+                        Object.create(null)
+                      );
 
-                          // Preserve the clientMutationId even if the insert fails.
-                          // This allows clients to correlate responses with requests.
-                          const $clientMutationIdInput = args.getRaw([
-                            "input",
-                            "clientMutationId",
-                          ]);
-                          const $clientMutationId = lambda(
-                            $clientMutationIdInput,
-                            (value) => (value == null ? null : value),
-                            true
-                          );
+                      // Preserve the clientMutationId even if the insert fails.
+                      // This allows clients to correlate responses with requests.
+                      const $clientMutationIdInput = args.getRaw([
+                        "input",
+                        "clientMutationId",
+                      ]);
+                      const $clientMutationId = lambda(
+                        $clientMutationIdInput,
+                        (value: any) => (value == null ? null : value),
+                        true
+                      );
 
-                          // Apply the input arguments to the insert step.
-                          args.apply($insert);
+                      // Apply the input arguments to the insert step.
+                      args.apply($insert);
 
-                          // Trap the insert to catch errors and pass them through as values.
-                          // PASS_THROUGH means the error object itself becomes the value.
-                          const $inspection = trap($insert, TRAP_ERROR, {
-                            valueForError: "PASS_THROUGH",
-                          });
+                      // Trap the insert to catch errors and pass them through as values.
+                      // PASS_THROUGH means the error object itself becomes the value.
+                      const $inspection = trap($insert, TRAP_ERROR, {
+                        valueForError: "PASS_THROUGH",
+                      });
 
-                          // CRITICAL ERROR HANDLING LOGIC:
-                          // This lambda determines which errors should be handled as union types
-                          // and which should propagate as standard GraphQL errors.
-                          //
-                          // Flow:
-                          // 1. Call analyzeInsertErrorForConflictHandling to check if this is a
-                          //    unique/primary key constraint violation
-                          // 2. If YES (errorDetails !== null):
-                          //    - Package the error for union type handling
-                          //    - Result will be returned as BookIsbnConflict, UserEmailConflict, etc.
-                          // 3. If NO (errorDetails === null) AND inspection is an Error:
-                          //    - RE-THROW the error immediately
-                          //    - This ensures CHECK constraints, NOT NULL, etc. appear in
-                          //      GraphQL's errors array with their original database messages
-                          // 4. If NO error at all:
-                          //    - This was a successful insert, package the data normally
-                          const $analyzed = lambda(
-                            $inspection,
-                            (inspection) => {
-                              const errorDetails =
-                                analyseInsertError(inspection);
+                      // CRITICAL ERROR HANDLING LOGIC:
+                      // This lambda determines which errors should be handled as union types
+                      // and which should propagate as standard GraphQL errors.
+                      //
+                      // Flow:
+                      // 1. Call analyzeInsertErrorForConflictHandling to check if this is a
+                      //    unique/primary key constraint violation
+                      // 2. If YES (errorDetails !== null):
+                      //    - Package the error for union type handling
+                      //    - Result will be returned as BookIsbnConflict, UserEmailConflict, etc.
+                      // 3. If NO (errorDetails === null) AND inspection is an Error:
+                      //    - RE-THROW the error immediately
+                      //    - This ensures CHECK constraints, NOT NULL, etc. appear in
+                      //      GraphQL's errors array with their original database messages
+                      // 4. If NO error at all:
+                      //    - This was a successful insert, package the data normally
+                      const $analyzed = lambda(
+                        $inspection,
+                        (inspection: any) => {
+                          const errorDetails = analyseInsertError(inspection);
 
-                              // Case 1: Handleable constraint violation (unique/primary key)
-                              // Return both the error and its details for union type processing
-                              if (errorDetails !== null) {
-                                return {
-                                  data: inspection,
-                                  error: errorDetails,
-                                };
-                              }
+                          // Case 1: Handleable constraint violation (unique/primary key)
+                          // Return both the error and its details for union type processing
+                          if (errorDetails !== null) {
+                            return {
+                              data: inspection,
+                              error: errorDetails,
+                            };
+                          }
 
-                              // Case 2: Non-handleable error (CHECK, NOT NULL, foreign key, etc.)
-                              // RE-THROW so it appears as a standard GraphQL error
-                              if (inspection instanceof Error) {
-                                throw inspection;
-                              }
+                          // Case 2: Non-handleable error (CHECK, NOT NULL, foreign key, etc.)
+                          // RE-THROW so it appears as a standard GraphQL error
+                          if (inspection instanceof Error) {
+                            throw inspection;
+                          }
 
-                              // Case 3: Successful insert
-                              // No error to handle
-                              return { data: inspection, error: null };
-                            },
-                            true
-                          );
-
-                          // Extract the data portion (either the row or the error object)
-                          const $dataOrError = lambda(
-                            $analyzed,
-                            (analyzed) => analyzed.data,
-                            true
-                          );
-
-                          // Extract the error details
-                          const $errorDetails = lambda(
-                            $analyzed,
-                            (analyzed) => analyzed.error,
-                            true
-                          );
-
-                          // Trap again to get either the inserted row or NULL on error.
-                          // This provides a fallback value for the union type discrimination.
-                          const $row = trap($dataOrError, TRAP_ERROR, {
-                            valueForError: "NULL",
-                          });
-
-                          // Build the conflict object with error details extracted from the database error.
-                          const $conflict = object({
-                            message: lambda(
-                              $errorDetails,
-                              (details) => details?.message ?? null,
-                              true
-                            ),
-                            constraint: lambda(
-                              $errorDetails,
-                              (details) => details?.constraint ?? null,
-                              true
-                            ),
-                          });
-
-                          // Build the result object containing:
-                          // - row: trapped insert result (NULL on error, row data on success)
-                          // - conflict: structured conflict details (populated on error, null on success)
-                          // - insert: the original insert step for proper field access
-                          const $result = object({
-                            row: $row,
-                            conflict: $conflict,
-                            insert: $insert,
-                          });
-
-                          // Build the final payload with clientMutationId and the result union.
-                          const $payload = object({
-                            clientMutationId: $clientMutationId,
-                            result: $result,
-                          });
-
-                          return $payload;
+                          // Case 3: Successful insert
+                          // No error to handle
+                          return { data: inspection, error: null };
                         },
-                      [
-                        object,
-                        SafePgInsertSingleStep,
-                        resource,
-                        trap,
-                        TRAP_ERROR,
-                        lambda,
-                        get,
-                        analyseInsertError,
-                      ]
-                    ),
+                        true
+                      );
+
+                      // Extract the data portion (either the row or the error object)
+                      const $dataOrError = lambda(
+                        $analyzed,
+                        (analyzed: any) => analyzed.data,
+                        true
+                      );
+
+                      // Extract the error details
+                      const $errorDetails = lambda(
+                        $analyzed,
+                        (analyzed: any) => analyzed.error,
+                        true
+                      );
+
+                      // Trap again to get either the inserted row or NULL on error.
+                      // This provides a fallback value for the union type discrimination.
+                      const $row = trap($dataOrError, TRAP_ERROR, {
+                        valueForError: "NULL",
+                      });
+
+                      // Build the conflict object with error details extracted from the database error.
+                      const $conflict = object({
+                        message: lambda(
+                          $errorDetails,
+                          (details: any) => details?.message ?? null,
+                          true
+                        ),
+                        constraint: lambda(
+                          $errorDetails,
+                          (details: any) => details?.constraint ?? null,
+                          true
+                        ),
+                      });
+
+                      // Build the result object containing:
+                      // - row: trapped insert result (NULL on error, row data on success)
+                      // - conflict: structured conflict details (populated on error, null on success)
+                      // - insert: the original insert step for proper field access
+                      const $result = object({
+                        row: $row,
+                        conflict: $conflict,
+                        insert: $insert,
+                      });
+
+                      // Build the final payload with clientMutationId and the result union.
+                      const $payload = object({
+                        clientMutationId: $clientMutationId,
+                        result: $result,
+                      });
+
+                      return $payload;
+                    },
                   }
                 ),
               },
