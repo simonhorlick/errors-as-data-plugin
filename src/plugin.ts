@@ -205,31 +205,23 @@ type ConflictDetails = {
 // might reasonably retry with different data (e.g., choosing a different username).
 // CHECK constraints and other validation errors indicate invalid data that needs
 // to be corrected differently, so they're better represented as standard errors.
-const makeAnalyzeInsertError = () =>
-  EXPORTABLE(
-    () =>
-      function analyzeInsertErrorForConflictHandling(
-        error: any
-      ): ConflictDetails {
-        if (
-          error instanceof DatabaseError &&
-          error.code === "23505" // unique_violation only
-        ) {
-          return {
-            message: error.detail ?? null,
-            // The constraint name is used to identify which type to return in the union.
-            constraint: error.constraint ?? null,
-          };
-        }
+const analyseInsertError = (error: any): ConflictDetails => {
+  if (
+    error instanceof DatabaseError &&
+    error.code === "23505" // unique_violation only
+  ) {
+    return {
+      message: error.detail ?? null,
+      // The constraint name is used to identify which type to return in the union.
+      constraint: error.constraint ?? null,
+    };
+  }
 
-        // For all other errors (including CHECK constraints with code 23514),
-        // return null to indicate this error should propagate as a standard
-        // GraphQL error with the original database error message.
-        return null;
-      },
-    [],
-    "pgInsertAnalyzeConstraintError"
-  );
+  // For all other errors (including CHECK constraints with code 23514),
+  // return null to indicate this error should propagate as a standard
+  // GraphQL error with the original database error message.
+  return null;
+};
 
 // createConflictFields generates the GraphQL field definitions for the conflict type.
 // Only exposes the message field to API consumers. Internal details like error codes,
@@ -856,9 +848,6 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
             );
             const tableTypeName = inflection.tableType(resource.codec);
 
-            // Reuse the shared analyzer so constraint handling stays consistent across the plugin.
-            const analyzeInsertError = makeAnalyzeInsertError();
-
             return build.extend(
               memo,
               {
@@ -899,7 +888,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                         TRAP_ERROR,
                         lambda,
                         get,
-                        analyzeInsertError
+                        analyseInsertError
                       ) =>
                         function plan(_: any, args: FieldArgs) {
                           // Create a SafePgInsertSingleStep to perform the database insert.
@@ -951,7 +940,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                             $inspection,
                             (inspection) => {
                               const errorDetails =
-                                analyzeInsertError(inspection);
+                                analyseInsertError(inspection);
 
                               // Case 1: Handleable constraint violation (unique/primary key)
                               // Return both the error and its details for union type processing
@@ -1035,7 +1024,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                         TRAP_ERROR,
                         lambda,
                         get,
-                        analyzeInsertError,
+                        analyseInsertError,
                       ]
                     ),
                   }
