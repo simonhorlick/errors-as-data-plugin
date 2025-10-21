@@ -11,52 +11,8 @@ import type {
 } from "grafast";
 import { assertExecutableStep, isPromiseLike } from "grafast";
 import type { GraphQLObjectType } from "grafast/graphql";
-import { EXPORTABLE } from "graphile-build";
 import { gatherConfig } from "graphile-build";
 import { DatabaseError } from "pg";
-
-/**
- * ErrorsAsDataPlugin
- *
- * This plugin provides enhanced create mutations that handle database constraint
- * violations gracefully using GraphQL union types instead of throwing errors.
- *
- * SCOPE: This plugin ONLY handles unique constraint and primary key violations.
- *
- * When a unique constraint or primary key violation occurs, instead of returning
- * a GraphQL error, the mutation returns a union type that allows the client to
- * discriminate between success and specific conflict types:
- *
- * Example:
- *   mutation {
- *     createBook(input: { book: { isbn: "123", title: "Foo" } }) {
- *       result {
- *         __typename
- *         ... on Book { isbn title }
- *         ... on BookIsbnConflict { message }
- *       }
- *     }
- *   }
- *
- * RATIONALE FOR SCOPE LIMITATION:
- *
- * Unique/Primary Key violations are handled as union types because:
- * - They represent conflicts that clients might reasonably handle (e.g., "username
- *   already taken, please choose another")
- * - Clients can take corrective action by retrying with different values
- * - The violation is predictable and part of normal application flow
- *
- * Other database errors (CHECK constraints, NOT NULL, foreign key violations, etc.)
- * are NOT handled as union types because:
- * - They indicate invalid data or programming errors
- * - They should be caught during validation before reaching the database
- * - Standard GraphQL errors with detailed messages are more appropriate
- * - They're exceptional cases, not normal application flow
- *
- * For example, a CHECK constraint violation indicates the client sent fundamentally
- * invalid data (e.g., empty string when non-empty is required). This is better
- * represented as a standard error rather than a union type conflict.
- */
 
 type StepType = {
   row: any;
@@ -73,30 +29,21 @@ function tagToString(
   return Array.isArray(str) ? str.join("\n") : str === true ? " " : str;
 }
 
-// SafePgInsertSingleStep extends PgInsertSingleStep to handle database constraint
-// violations gracefully by converting promise rejections into regular values.
-// This allows constraint errors to be processed as union type results rather than
-// being propagated to the GraphQL errors array.
-//
-// When a database constraint is violated (e.g., unique constraint, foreign key
-// violation), PostgreSQL raises an error. Without this wrapper, the error would
-// bubble up as a GraphQL error. By catching the rejection and returning the error
-// object as a value, we can inspect it in the plan phase and determine whether to
-// return the created record or conflict details.
+// SafePgInsertSingleStep extends PgInsertSingleStep to handle database
+// constraint violations gracefully by converting promise rejections into
+// regular values.
 class SafePgInsertSingleStep<
   TResource extends PgResource<any, any, any, any, any> = PgResource
 > extends PgInsertSingleStep<TResource> {
   async execute(details: ExecutionDetails): Promise<GrafastResultsList<any>> {
     const results = await super.execute(details);
 
-    // Map over the results to catch any rejected promises and convert them to values.
-    // This is critical for preventing database errors from reaching the GraphQL
-    // errors array.
+    // Map over the results to catch any rejected promises and convert them to
+    // values.
     return details.indexMap((i) => {
       const value = results[i];
       if (isPromiseLike(value)) {
-        // Catch promise rejections and return the error object as a regular value
-        // so it can be analyzed later in the plan phase.
+        // Prevent the promise rejection from propagating.
         return (value as Promise<any>).catch((error) => error);
       }
       return value;
@@ -104,8 +51,8 @@ class SafePgInsertSingleStep<
   }
 }
 
-// ConstraintInfo represents a database constraint that can cause insert conflicts.
-// This includes primary keys and unique constraints.
+// ConstraintInfo represents a database constraint that can cause insert
+// conflicts. This includes primary keys and unique constraints.
 interface ConstraintInfo {
   // Name of the constraint (e.g., "books_pkey", "unique_user_username").
   constraintName: string;
@@ -128,7 +75,7 @@ declare global {
       ErrorsAsDataPlugin: true;
     }
     interface GatherHelpers {
-      pgMutationCreateWithConflicts: {
+      ErrorsAsDataPlugin: {
         getConstraintsForTable(tableName: string): ConstraintInfo[];
       };
     }
@@ -162,7 +109,8 @@ declare global {
         this: Inflection,
         resource: PgResource<any, any, any, any, any>
       ): string;
-      // Generate conflict type name for a specific constraint (e.g., "IsbnConflict").
+      // Generate conflict type name for a specific constraint (e.g.,
+      // "IsbnConflict").
       constraintConflictType(
         this: Inflection,
         constraintInfo: ConstraintInfo
@@ -176,12 +124,7 @@ declare global {
 }
 
 // isInsertable determines whether a given PostgreSQL resource (table/view) should
-// have create mutations generated for it. Resources are considered insertable if they:
-// - Are not parameterized (functions)
-// - Have attributes (columns)
-// - Are not polymorphic types
-// - Are not anonymous types
-// - Match the "resource:insert" behavior
+// have create mutations generated for it.
 const isInsertable = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>
@@ -193,94 +136,57 @@ const isInsertable = (
   return build.behavior.pgResourceMatches(resource, "resource:insert") === true;
 };
 
-// Type for the result of analyzing a database error.
-// Null means the error should propagate as a standard GraphQL error.
-// Non-null means the error should be handled as a union type conflict.
 type ConflictDetails = {
   message: string | null;
   constraint: string | null;
 } | null;
 
-// Determines whether a database error should be handled as a union type conflict
-// or allowed to propagate as a standard GraphQL error.
-//
-// Returns:
-//   - ConflictDetails object: Error should be handled as a union type (e.g., BookIsbnConflict)
-//   - null: Error should propagate normally to GraphQL's error array
-//
-// This plugin ONLY handles unique constraint and primary key violations as union types.
-// Other database errors (CHECK constraints, NOT NULL, foreign key violations, etc.)
-// are intentionally excluded and will appear as standard GraphQL errors.
-//
-// PostgreSQL error codes (for reference):
-// - 23000: integrity_constraint_violation
-// - 23001: restrict_violation
-// - 23502: not_null_violation
-// - 23503: foreign_key_violation
-// - 23505: unique_violation (THIS IS WHAT WE HANDLE)
-// - 23514: check_violation
-//
-// Rationale: Union type conflict handling is designed for cases where the client
-// might reasonably retry with different data (e.g., choosing a different username).
-// CHECK constraints and other validation errors indicate invalid data that needs
-// to be corrected differently, so they're better represented as standard errors.
-const makeAnalyzeInsertError = (tableTypeName: string) =>
-  EXPORTABLE(
-    (tableTypeName) =>
-      function analyzeInsertErrorForConflictHandling(
-        error: any
-      ): ConflictDetails {
-        // Only handle unique and primary key constraint violations as union types.
-        // Error code 23505 is unique_violation - the only one we convert into
-        // union type conflicts.
-        if (
-          error instanceof DatabaseError &&
-          error.code === "23505" // unique_violation only
-        ) {
-          return {
-            message: error.detail ?? null,
-            // The constraint name is used to identify which type to return in the union.
-            constraint: error.constraint ?? null,
-          };
-        }
+// See: https://www.postgresql.org/docs/current/errcodes-appendix.html
+const postgresErrorUniqueViolationCode = "23505";
 
-        // For all other errors (including CHECK constraints with code 23514),
-        // return null to indicate this error should propagate as a standard
-        // GraphQL error with the original database error message.
-        return null;
-      },
-    [tableTypeName],
-    "pgInsertAnalyzeConstraintError"
-  );
+// Determines whether a database error should be handled as a union type
+// conflict or allowed to propagate as a standard GraphQL error.
+const analyseInsertError = (error: unknown): ConflictDetails => {
+  if (
+    error instanceof DatabaseError &&
+    error.code === postgresErrorUniqueViolationCode
+  ) {
+    return {
+      message: error.detail ?? null,
+      // The constraint name is used to identify which type to return in the
+      // union.
+      constraint: error.constraint ?? null,
+    };
+  }
 
-// createConflictFields generates the GraphQL field definitions for the conflict type.
-// Only exposes the message field to API consumers. Internal details like error codes,
-// constraint names, and database-specific details are intentionally hidden.
+  // For all other errors (including CHECK constraints with code 23514),
+  // return null to indicate this error should propagate as a standard
+  // GraphQL error with the original database error message.
+  return null;
+};
+
+// createConflictFields generates the GraphQL field definitions for the
+// conflict type. It only exposes the message field to API consumers. Internal
+// details like error codes, constraint names, and database-specific details
+// are intentionally omitted.
 const createConflictFields = (build: GraphileBuild.Build) => {
-  const {
-    graphql: { GraphQLString },
-  } = build;
-
   return ({ fieldWithHooks }: any) => ({
     message: fieldWithHooks({ fieldName: "message" }, () => ({
-      type: GraphQLString,
+      type: build.graphql.GraphQLString,
       description: build.wrapDescription(
         "Human-readable description of the conflict.",
         "field"
       ),
-      plan: EXPORTABLE(
-        () =>
-          function plan($conflict: ObjectStep) {
-            return $conflict.get("message");
-          },
-        []
-      ),
+      plan($conflict: ObjectStep) {
+        return $conflict.get("message");
+      },
     })),
   });
 };
 
-// registerInputType creates and registers the GraphQL input type for create mutations.
-// This input type includes clientMutationId and the table's input fields.
+// registerInputType creates and registers the GraphQL input type for create
+// mutations. This input type includes clientMutationId and the table's input
+// fields.
 const registerInputType = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -305,13 +211,9 @@ const registerInputType = (
         return {
           clientMutationId: {
             type: GraphQLString,
-            apply: EXPORTABLE(
-              () =>
-                function apply(qb: PgInsertSingleQueryBuilder, val) {
-                  qb.setMeta("clientMutationId", val);
-                },
-              []
-            ),
+            apply(qb: PgInsertSingleQueryBuilder, val: any) {
+              qb.setMeta("clientMutationId", val);
+            },
           },
           ...(isInputType(TableInput)
             ? {
@@ -326,15 +228,11 @@ const registerInputType = (
                       "field"
                     ),
                     type: new GraphQLNonNull(TableInput),
-                    apply: EXPORTABLE(
-                      () =>
-                        function plan(qb: PgInsertSingleQueryBuilder, arg) {
-                          if (arg != null) {
-                            return qb.setBuilder();
-                          }
-                        },
-                      []
-                    ),
+                    apply(qb: PgInsertSingleQueryBuilder, arg: any) {
+                      if (arg != null) {
+                        return qb.setBuilder();
+                      }
+                    },
                   })
                 ),
               }
@@ -346,8 +244,8 @@ const registerInputType = (
   );
 };
 
-// registerConflictType creates and registers the GraphQL type for constraint conflicts.
-// This type contains error details when database constraints are violated.
+// registerConflictType creates and registers the GraphQL type for a single
+// constraint conflict.
 const registerConflictType = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -373,8 +271,9 @@ const registerConflictType = (
   );
 };
 
-// registerConstraintConflictTypes creates and registers individual GraphQL conflict types
-// for each constraint on the resource (e.g., IsbnConflict, UsernameConflict).
+// registerConstraintConflictTypes creates and registers individual GraphQL
+// conflict types for each constraint on the resource (e.g., IsbnConflict,
+// UsernameConflict).
 const registerConstraintConflictTypes = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -414,7 +313,7 @@ const registerResultUnionType = (
 ) => {
   const {
     inflection,
-    grafast: { get, lambda, list },
+    grafast: { get, lambda },
   } = build;
 
   // Build a map from constraint name to conflict type name.
@@ -456,58 +355,52 @@ const registerResultUnionType = (
       // planType determines which type (table or constraint-specific conflict)
       // should be returned for a given result by examining the constraint name
       // in the error.
-      planType: EXPORTABLE(
-        (get, lambda, list, tableTypeName, constraintToTypeName) =>
-          function planType($specifier: Step<StepType>) {
-            const $row = get($specifier, "row");
-            const $conflict = get($specifier, "conflict");
-            const $insert = get($specifier, "insert");
-            const $conflictMessage = get($conflict, "message");
-            const $constraintName = get($conflict, "constraint");
+      planType($specifier: Step<StepType>) {
+        const $conflict = get($specifier, "conflict");
+        const $insert = get($specifier, "insert");
+        const $constraintName = get($conflict, "constraint");
 
-            // Determine the __typename by examining the constraint name.
-            // If there's a conflict, map the constraint name to the appropriate
-            // conflict type. Otherwise, return the table type for successful inserts.
-            const $__typename = lambda(
-              list([$conflictMessage, $constraintName, $row]),
-              ([conflictMessage, constraintName, row]) => {
-                if (constraintName != null) {
-                  // Look up the constraint-specific type name.
-                  const conflictTypeName =
-                    constraintToTypeName.get(constraintName);
-                  if (!conflictTypeName) {
-                    throw new Error(
-                      `Unknown constraint '${constraintName}' for table '${tableTypeName}'`
-                    );
-                  }
+        // Determine the __typename by examining the constraint name.
+        // If there's a conflict, map the constraint name to the appropriate
+        // conflict type. Otherwise, return the table type for successful
+        // inserts.
+        const $__typename = lambda(
+          $constraintName,
+          (constraintName: string | null) => {
+            if (constraintName != null) {
+              // Look up the constraint-specific type name.
+              const conflictTypeName = constraintToTypeName.get(constraintName);
+              if (!conflictTypeName) {
+                throw new Error(
+                  `Unknown constraint '${constraintName}' for table '${tableTypeName}'`
+                );
+              }
 
-                  return conflictTypeName;
-                } else {
-                  // Success type.
-                  return tableTypeName;
-                }
-              },
-              true
-            );
-            return {
-              $__typename,
-
-              // planForType returns the appropriate step for each union member type.
-              // For the table type (successful insert), we return $insert which
-              // provides proper field access to the inserted row's columns.
-              // For any conflict type, we return $conflict which contains the
-              // constraint violation details.
-              planForType(t) {
-                if (t.name === tableTypeName) {
-                  return $insert;
-                }
-                // All conflict types use the same $conflict step.
-                return $conflict;
-              },
-            };
+              return conflictTypeName;
+            } else {
+              // Success type.
+              return tableTypeName;
+            }
           },
-        [get, lambda, list, tableTypeName, constraintToTypeName]
-      ),
+          true
+        );
+        return {
+          $__typename,
+
+          // planForType returns the appropriate step for each union member type.
+          // For the table type (successful insert), we return $insert which
+          // provides proper field access to the inserted row's columns.
+          // For any conflict type, we return $conflict which contains the
+          // constraint violation details.
+          planForType(t: GraphQLObjectType) {
+            if (t.name === tableTypeName) {
+              return $insert;
+            }
+            // All conflict types use the same $conflict step.
+            return $conflict;
+          },
+        };
+      },
     }),
     `ErrorsAsDataPlugin result union for ${resource.name}`
   );
@@ -541,17 +434,9 @@ const registerPayloadType = (
         return {
           clientMutationId: {
             type: GraphQLString,
-            plan: EXPORTABLE(
-              () =>
-                function plan(
-                  $mutation: ObjectStep<{
-                    clientMutationId: any;
-                  }>
-                ) {
-                  return $mutation.get("clientMutationId");
-                },
-              []
-            ),
+            plan($mutation: any) {
+              return $mutation.get("clientMutationId");
+            },
           },
           ...(resultType
             ? {
@@ -566,13 +451,9 @@ const registerPayloadType = (
                       "field"
                     ),
                     type: resultType,
-                    plan: EXPORTABLE(
-                      () =>
-                        function plan($payload: ObjectStep<any>) {
-                          return $payload.get("result");
-                        },
-                      []
-                    ),
+                    plan($payload: any) {
+                      return $payload.get("result");
+                    },
                   })
                 ),
               }
@@ -584,19 +465,51 @@ const registerPayloadType = (
   );
 };
 
-// ErrorsAsDataPlugin generates GraphQL create mutations that
-// return a union type of either the created record or conflict details, instead
-// of throwing errors when database constraints are violated.
-//
-// This plugin creates the following GraphQL types for each insertable resource:
-// - Input type: Defines the structure of data to be inserted
-// - Conflict types: One per constraint, detailing the violation
-// - Result union type: Union of the table type and conflict types
-// - Payload type: Wraps the result union with clientMutationId
-//
-// When an insert succeeds, the mutation returns the created record.
-// When a constraint is violated (e.g., unique constraint, foreign key), the mutation
-// returns conflict details instead of raising a GraphQL error.
+/**
+ * ErrorsAsDataPlugin
+ *
+ * This plugin provides enhanced create mutations that handle database
+ * constraint violations gracefully using GraphQL union types instead of
+ * throwing errors. This plugin only handles unique constraint and primary key
+ * violations.
+ *
+ * When a constraint violation occurs, instead of returning a GraphQL error,
+ * the mutation returns a union type that allows the client to discriminate
+ * between success and specific conflict types:
+ *
+ * Example:
+ *   mutation {
+ *     createBook(input: { book: { isbn: "123", title: "Foo" } }) {
+ *       result {
+ *         __typename
+ *         ... on Book { isbn title }
+ *         ... on BookIsbnConflict { message }
+ *       }
+ *     }
+ *   }
+ *
+ * Unique and primary key violations are handled as union types because they
+ * represent conflicts that clients might reasonably handle as part of normal
+ * application flow. When a username is already taken or an ISBN already
+ * exists, the client can take corrective action by retrying with different
+ * values. These violations are predictable and expected.
+ *
+ * Other database errors, such as CHECK constraints, NOT NULL violations, and
+ * foreign key violations, are intentionally not handled as union types. These
+ * errors indicate invalid data or programming errors that should be caught
+ * during validation before reaching the database. Standard GraphQL errors
+ * with detailed messages are more appropriate for these exceptional cases, as
+ * they're not part of normal application flow. For example, a CHECK constraint
+ * violation indicates the client sent fundamentally invalid data (such as an
+ * empty string when non-empty is required), which is better represented as a
+ * standard error rather than a union type conflict.
+ *
+ * This plugin creates the following GraphQL types for each insertable resource:
+ * - Input type: Defines the structure of data to be inserted
+ * - Conflict types: One per constraint, detailing the violation
+ * - Result union type: Union of the table type and conflict types
+ * - Payload type: Wraps the result union with clientMutationId
+ */
 export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
   name: "ErrorsAsDataPlugin",
   description:
@@ -604,35 +517,33 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
   version: "0.1.0",
   after: ["smart-tags"],
 
-  // Define custom inflection methods for generating consistent GraphQL type and field names.
-  // These methods are called by the plugin to create names for the various GraphQL
-  // constructs (input types, payload types, conflict types, etc.).
   inflection: {
     add: {
-      // Generate the mutation field name (e.g., "createBook").
-      createField(options, resource) {
+      // Generate the mutation field name (e.g. "createBook").
+      createField(_, resource) {
         return this.camelCase(`create-${this.tableType(resource.codec)}`);
       },
 
-      // Generate the input type name (e.g., "CreateBookInput").
-      createInputType(options, resource) {
+      // Generate the input type name (e.g. "CreateBookInput").
+      createInputType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-input`);
       },
 
-      // Generate the payload type name (e.g., "CreateBookPayload").
-      createPayloadType(options, resource) {
+      // Generate the payload type name (e.g. "CreateBookPayload").
+      createPayloadType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-payload`);
       },
 
-      // Generate the result union type name (e.g., "CreateBookResult").
-      createResultUnionType(options, resource) {
+      // Generate the result union type name (e.g. "CreateBookResult").
+      createResultUnionType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-result`);
       },
 
-      // Generate constraint-specific conflict type name based on the GraphQL type name
-      // and column names involved in the constraint (e.g., "BookIsbnConflict",
-      // "UserUsernameConflict"). This ensures uniqueness across tables.
-      constraintConflictType(options, constraintInfo) {
+      // Generate constraint-specific conflict type name based on the GraphQL
+      // type name and column names involved in the constraint (e.g.
+      // "BookIsbnConflict", "UserUsernameConflict"). This ensures uniqueness
+      // across tables.
+      constraintConflictType(_, constraintInfo) {
         // Use the GraphQL type name (singular form) stored in constraintInfo.
         // This is populated during schema generation to ensure consistency.
         const tableTypeName =
@@ -645,7 +556,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
       },
 
       // Generate the table field name used in the input type (e.g., "book").
-      tableFieldName(options, resource) {
+      tableFieldName(_, resource) {
         return this.camelCase(`${this.tableType(resource.codec)}`);
       },
     },
@@ -653,7 +564,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
 
   // Gather phase to collect constraint information from the database schema.
   gather: gatherConfig({
-    namespace: "pgMutationCreateWithConflicts",
+    namespace: "ErrorsAsDataPlugin",
     initialState: () => ({
       constraintsByTable: new Map<string, ConstraintInfo[]>(),
     }),
@@ -669,12 +580,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
     hooks: {
       pgIntrospection_introspection(info, event) {
-        const { introspection } = event;
-
-        // Iterate through all constraints and collect primary keys and unique constraints.
-        for (const pgConstraint of introspection.constraints) {
+        for (const pgConstraint of event.introspection.constraints) {
           // Only process primary key ('p') and unique ('u') constraints.
-          // These are the constraints that can cause insert conflicts.
           if (pgConstraint.contype !== "p" && pgConstraint.contype !== "u") {
             continue;
           }
@@ -726,7 +633,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     // Register custom behavior tags that control plugin functionality.
     behaviorRegistry: {
       add: {
-        // "insert:resource:select" allows selecting the inserted row in the mutation payload.
+        // "insert:resource:select" allows selecting the inserted row in the
+        // mutation payload.
         "insert:resource:select": {
           description:
             "can select the row that was inserted (on the mutation payload)",
@@ -742,7 +650,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
 
     // Configure default behaviors for PostgreSQL resources.
-    // This determines which resources automatically get insert mutations generated.
+    // This determines which resources automatically get insert mutations
+    // generated.
     entityBehavior: {
       pgResource: {
         inferred: {
@@ -772,13 +681,14 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
 
     hooks: {
-      // The init hook runs during schema building and registers all the GraphQL types
-      // (input types, conflict types, union types, payload types) for insertable resources.
-      // This happens before the actual mutation fields are added to the schema.
-      init(_, build) {
+      // The init hook runs during schema building and registers all the
+      // GraphQL types (input types, conflict types, union types, payload
+      // types) for insertable resources.
+      init(input, build) {
         const { inflection } = build;
 
-        // Find all PostgreSQL resources that should have create mutations generated.
+        // Find all PostgreSQL resources that should have create mutations
+        // generated.
         const insertableResources = Object.values(build.pgResources).filter(
           (resource) => isInsertable(build, resource)
         );
@@ -795,8 +705,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
             const resultTypeName = inflection.createResultUnionType(resource);
             const payloadTypeName = inflection.createPayloadType(resource);
 
-            // Get the constraints for this table. We need to know the actual table name
-            // from the database, which is stored in the codec's name.
+            // Get the constraints for this table.
             const tableName = resource.codec.name;
             const constraints = (constraintsByTable.get(tableName) || []).map(
               (c: ConstraintInfo): ConstraintInfo => ({
@@ -842,11 +751,11 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
           });
         });
 
-        return _;
+        return input;
       },
 
-      // The GraphQLObjectType_fields hook adds the actual mutation fields to the schema.
-      // This runs after init, once all the types have been registered.
+      // The GraphQLObjectType_fields hook adds the actual mutation fields to
+      // the schema.
       GraphQLObjectType_fields(fields, build, context) {
         const {
           inflection,
@@ -878,9 +787,6 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
             );
             const tableTypeName = inflection.tableType(resource.codec);
 
-            // Reuse the shared analyzer so constraint handling stays consistent across the plugin.
-            const analyzeInsertError = makeAnalyzeInsertError(tableTypeName);
-
             return build.extend(
               memo,
               {
@@ -895,13 +801,9 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                     args: {
                       input: {
                         type: new GraphQLNonNull(mutationInputType),
-                        applyPlan: EXPORTABLE(
-                          () =>
-                            function plan(_: any, $object: ObjectStep<any>) {
-                              return $object;
-                            },
-                          []
-                        ),
+                        applyPlan(_: any, $object: any) {
+                          return $object;
+                        },
                       },
                     },
                     type: payloadType,
@@ -910,156 +812,98 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                       resource.extensions?.tags?.deprecated
                     ),
 
-                    // The plan function executes during query planning and sets up the
-                    // steps needed to handle both successful inserts and constraint violations.
-                    plan: EXPORTABLE(
-                      (
-                        object,
-                        SafePgInsertSingleStep,
+                    plan(_: any, args: FieldArgs) {
+                      const $insert = new SafePgInsertSingleStep(
                         resource,
-                        trap,
-                        TRAP_ERROR,
-                        lambda,
-                        get,
-                        analyzeInsertError
-                      ) =>
-                        function plan(_: any, args: FieldArgs) {
-                          // Create a SafePgInsertSingleStep to perform the database insert.
-                          // This custom step catches promise rejections and converts them
-                          // to regular values so errors don't propagate to the GraphQL errors array.
-                          const $insert = new SafePgInsertSingleStep(
-                            resource,
-                            Object.create(null)
-                          );
+                        Object.create(null)
+                      );
 
-                          // Preserve the clientMutationId even if the insert fails.
-                          // This allows clients to correlate responses with requests.
-                          const $clientMutationIdInput = args.getRaw([
-                            "input",
-                            "clientMutationId",
-                          ]);
-                          const $clientMutationId = lambda(
-                            $clientMutationIdInput,
-                            (value) => (value == null ? null : value),
-                            true
-                          );
+                      // Preserve the clientMutationId even if the insert fails.
+                      // This allows clients to correlate responses with requests.
+                      const $clientMutationIdInput = args.getRaw([
+                        "input",
+                        "clientMutationId",
+                      ]);
 
-                          // Apply the input arguments to the insert step.
-                          args.apply($insert);
+                      // Apply the input arguments to the insert step.
+                      args.apply($insert);
 
-                          // Trap the insert to catch errors and pass them through as values.
-                          // PASS_THROUGH means the error object itself becomes the value.
-                          const $inspection = trap($insert, TRAP_ERROR, {
-                            valueForError: "PASS_THROUGH",
-                          });
+                      // Trap the insert to catch errors and pass them through as values.
+                      // PASS_THROUGH means the error object itself becomes the value.
+                      const $inspection = trap($insert, TRAP_ERROR, {
+                        valueForError: "PASS_THROUGH",
+                      });
 
-                          // CRITICAL ERROR HANDLING LOGIC:
-                          // This lambda determines which errors should be handled as union types
-                          // and which should propagate as standard GraphQL errors.
-                          //
-                          // Flow:
-                          // 1. Call analyzeInsertErrorForConflictHandling to check if this is a
-                          //    unique/primary key constraint violation
-                          // 2. If YES (errorDetails !== null):
-                          //    - Package the error for union type handling
-                          //    - Result will be returned as BookIsbnConflict, UserEmailConflict, etc.
-                          // 3. If NO (errorDetails === null) AND inspection is an Error:
-                          //    - RE-THROW the error immediately
-                          //    - This ensures CHECK constraints, NOT NULL, etc. appear in
-                          //      GraphQL's errors array with their original database messages
-                          // 4. If NO error at all:
-                          //    - This was a successful insert, package the data normally
-                          const $analyzed = lambda(
-                            $inspection,
-                            (inspection) => {
-                              const errorDetails =
-                                analyzeInsertError(inspection);
+                      // This lambda determines which errors should be handled
+                      // as union types  and which should propagate as standard
+                      // GraphQL errors.
+                      const $analyzed = lambda(
+                        $inspection,
+                        (
+                          inspection: unknown
+                        ): { data: unknown; error: ConflictDetails | null } => {
+                          const errorDetails = analyseInsertError(inspection);
+                          // Return both the error and its details for union type processing
+                          if (errorDetails !== null) {
+                            return {
+                              data: inspection,
+                              error: errorDetails,
+                            };
+                          }
 
-                              // Case 1: Handleable constraint violation (unique/primary key)
-                              // Return both the error and its details for union type processing
-                              if (errorDetails !== null) {
-                                return {
-                                  data: inspection,
-                                  error: errorDetails,
-                                };
-                              }
+                          // Some other error that we aren't interested in
+                          // re-throw so it appears as a standard GraphQL error.
+                          if (inspection instanceof Error) {
+                            throw inspection;
+                          }
 
-                              // Case 2: Non-handleable error (CHECK, NOT NULL, foreign key, etc.)
-                              // RE-THROW so it appears as a standard GraphQL error
-                              if (inspection instanceof Error) {
-                                throw inspection;
-                              }
-
-                              // Case 3: Successful insert
-                              // No error to handle
-                              return { data: inspection, error: null };
-                            },
-                            true
-                          );
-
-                          // Extract the data portion (either the row or the error object)
-                          const $dataOrError = lambda(
-                            $analyzed,
-                            (analyzed) => analyzed.data,
-                            true
-                          );
-
-                          // Extract the error details
-                          const $errorDetails = lambda(
-                            $analyzed,
-                            (analyzed) => analyzed.error,
-                            true
-                          );
-
-                          // Trap again to get either the inserted row or NULL on error.
-                          // This provides a fallback value for the union type discrimination.
-                          const $row = trap($dataOrError, TRAP_ERROR, {
-                            valueForError: "NULL",
-                          });
-
-                          // Build the conflict object with error details extracted from the database error.
-                          const $conflict = object({
-                            message: lambda(
-                              $errorDetails,
-                              (details) => details?.message ?? null,
-                              true
-                            ),
-                            constraint: lambda(
-                              $errorDetails,
-                              (details) => details?.constraint ?? null,
-                              true
-                            ),
-                          });
-
-                          // Build the result object containing:
-                          // - row: trapped insert result (NULL on error, row data on success)
-                          // - conflict: structured conflict details (populated on error, null on success)
-                          // - insert: the original insert step for proper field access
-                          const $result = object({
-                            row: $row,
-                            conflict: $conflict,
-                            insert: $insert,
-                          });
-
-                          // Build the final payload with clientMutationId and the result union.
-                          const $payload = object({
-                            clientMutationId: $clientMutationId,
-                            result: $result,
-                          });
-
-                          return $payload;
+                          // Successful insert.
+                          return { data: inspection, error: null };
                         },
-                      [
-                        object,
-                        SafePgInsertSingleStep,
-                        resource,
-                        trap,
-                        TRAP_ERROR,
-                        lambda,
-                        get,
-                        analyzeInsertError,
-                      ]
-                    ),
+                        true
+                      );
+
+                      // Extract the data portion (either the row or the error
+                      // object).
+                      const $dataOrError = lambda(
+                        $analyzed,
+                        (analyzed) => analyzed.data,
+                        true
+                      );
+
+                      // Extract the error details
+                      const $errorDetails = lambda(
+                        $analyzed,
+                        (analyzed) => analyzed.error,
+                        true
+                      );
+
+                      // Build the conflict object with error details extracted
+                      // from the database error.
+                      const $conflict = object({
+                        message: lambda(
+                          $errorDetails,
+                          (details) => details?.message ?? null,
+                          true
+                        ),
+                        constraint: lambda(
+                          $errorDetails,
+                          (details) => details?.constraint ?? null,
+                          true
+                        ),
+                      });
+
+                      const $result = object({
+                        row: $dataOrError,
+                        conflict: $conflict,
+                        insert: $insert,
+                      });
+
+                      return object({
+                        clientMutationId: $clientMutationIdInput,
+                        result: $result,
+                      });
+                    },
                   }
                 ),
               },
