@@ -1,19 +1,3 @@
-import "graphile-config";
-
-import type { PgInsertSingleQueryBuilder, PgResource } from "@dataplan/pg";
-import { PgInsertSingleStep } from "@dataplan/pg";
-import type {
-  ExecutionDetails,
-  GrafastResultsList,
-  FieldArgs,
-  ObjectStep,
-  Step,
-} from "grafast";
-import { assertExecutableStep, isPromiseLike } from "grafast";
-import type { GraphQLObjectType } from "grafast/graphql";
-import { gatherConfig } from "graphile-build";
-import { DatabaseError } from "pg";
-
 /**
  * ErrorsAsDataPlugin
  *
@@ -53,6 +37,21 @@ import { DatabaseError } from "pg";
  * empty string when non-empty is required), which is better represented as a
  * standard error rather than a union type conflict.
  */
+import "graphile-config";
+
+import type { PgInsertSingleQueryBuilder, PgResource } from "@dataplan/pg";
+import { PgInsertSingleStep } from "@dataplan/pg";
+import type {
+  ExecutionDetails,
+  GrafastResultsList,
+  FieldArgs,
+  ObjectStep,
+  Step,
+} from "grafast";
+import { assertExecutableStep, isPromiseLike } from "grafast";
+import type { GraphQLObjectType } from "grafast/graphql";
+import { gatherConfig } from "graphile-build";
+import { DatabaseError } from "pg";
 
 type StepType = {
   row: any;
@@ -181,37 +180,20 @@ type ConflictDetails = {
   constraint: string | null;
 } | null;
 
-// Determines whether a database error should be handled as a union type conflict
-// or allowed to propagate as a standard GraphQL error.
-//
-// Returns:
-//   - ConflictDetails object: Error should be handled as a union type (e.g., BookIsbnConflict)
-//   - null: Error should propagate normally to GraphQL's error array
-//
-// This plugin ONLY handles unique constraint and primary key violations as union types.
-// Other database errors (CHECK constraints, NOT NULL, foreign key violations, etc.)
-// are intentionally excluded and will appear as standard GraphQL errors.
-//
-// PostgreSQL error codes (for reference):
-// - 23000: integrity_constraint_violation
-// - 23001: restrict_violation
-// - 23502: not_null_violation
-// - 23503: foreign_key_violation
-// - 23505: unique_violation (THIS IS WHAT WE HANDLE)
-// - 23514: check_violation
-//
-// Rationale: Union type conflict handling is designed for cases where the client
-// might reasonably retry with different data (e.g., choosing a different username).
-// CHECK constraints and other validation errors indicate invalid data that needs
-// to be corrected differently, so they're better represented as standard errors.
+// See: https://www.postgresql.org/docs/current/errcodes-appendix.html
+const postgresErrorUniqueViolationCode = "23505";
+
+// Determines whether a database error should be handled as a union type
+// conflict or allowed to propagate as a standard GraphQL error.
 const analyseInsertError = (error: any): ConflictDetails => {
   if (
     error instanceof DatabaseError &&
-    error.code === "23505" // unique_violation only
+    error.code === postgresErrorUniqueViolationCode
   ) {
     return {
       message: error.detail ?? null,
-      // The constraint name is used to identify which type to return in the union.
+      // The constraint name is used to identify which type to return in the
+      // union.
       constraint: error.constraint ?? null,
     };
   }
@@ -222,17 +204,14 @@ const analyseInsertError = (error: any): ConflictDetails => {
   return null;
 };
 
-// createConflictFields generates the GraphQL field definitions for the conflict type.
-// Only exposes the message field to API consumers. Internal details like error codes,
-// constraint names, and database-specific details are intentionally hidden.
+// createConflictFields generates the GraphQL field definitions for the
+// conflict type. It only exposes the message field to API consumers. Internal
+// details like error codes, constraint names, and database-specific details
+// are intentionally omitted.
 const createConflictFields = (build: GraphileBuild.Build) => {
-  const {
-    graphql: { GraphQLString },
-  } = build;
-
   return ({ fieldWithHooks }: any) => ({
     message: fieldWithHooks({ fieldName: "message" }, () => ({
-      type: GraphQLString,
+      type: build.graphql.GraphQLString,
       description: build.wrapDescription(
         "Human-readable description of the conflict.",
         "field"
@@ -244,8 +223,9 @@ const createConflictFields = (build: GraphileBuild.Build) => {
   });
 };
 
-// registerInputType creates and registers the GraphQL input type for create mutations.
-// This input type includes clientMutationId and the table's input fields.
+// registerInputType creates and registers the GraphQL input type for create
+// mutations. This input type includes clientMutationId and the table's input
+// fields.
 const registerInputType = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -303,8 +283,8 @@ const registerInputType = (
   );
 };
 
-// registerConflictType creates and registers the GraphQL type for constraint conflicts.
-// This type contains error details when database constraints are violated.
+// registerConflictType creates and registers the GraphQL type for a single
+// constraint conflict.
 const registerConflictType = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -330,8 +310,9 @@ const registerConflictType = (
   );
 };
 
-// registerConstraintConflictTypes creates and registers individual GraphQL conflict types
-// for each constraint on the resource (e.g., IsbnConflict, UsernameConflict).
+// registerConstraintConflictTypes creates and registers individual GraphQL
+// conflict types for each constraint on the resource (e.g., IsbnConflict,
+// UsernameConflict).
 const registerConstraintConflictTypes = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>,
@@ -425,11 +406,14 @@ const registerResultUnionType = (
         // conflict type. Otherwise, return the table type for successful inserts.
         const $__typename = lambda(
           list([$conflictMessage, $constraintName, $row]),
-          ([conflictMessage, constraintName, row]: readonly [any, any, any]) => {
+          ([conflictMessage, constraintName, row]: readonly [
+            string | null,
+            string | null,
+            DatabaseError | { c: any; m: any; n: any; t: any }
+          ]) => {
             if (constraintName != null) {
               // Look up the constraint-specific type name.
-              const conflictTypeName =
-                constraintToTypeName.get(constraintName);
+              const conflictTypeName = constraintToTypeName.get(constraintName);
               if (!conflictTypeName) {
                 throw new Error(
                   `Unknown constraint '${constraintName}' for table '${tableTypeName}'`
