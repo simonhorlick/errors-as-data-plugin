@@ -313,7 +313,7 @@ const registerResultUnionType = (
 ) => {
   const {
     inflection,
-    grafast: { get, lambda, list },
+    grafast: { get, lambda },
   } = build;
 
   // Build a map from constraint name to conflict type name.
@@ -365,8 +365,8 @@ const registerResultUnionType = (
         // conflict type. Otherwise, return the table type for successful
         // inserts.
         const $__typename = lambda(
-          list([$constraintName]),
-          ([constraintName]: readonly [string | null]) => {
+          $constraintName,
+          (constraintName: string | null) => {
             if (constraintName != null) {
               // Look up the constraint-specific type name.
               const conflictTypeName = constraintToTypeName.get(constraintName);
