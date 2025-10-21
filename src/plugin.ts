@@ -205,9 +205,9 @@ type ConflictDetails = {
 // might reasonably retry with different data (e.g., choosing a different username).
 // CHECK constraints and other validation errors indicate invalid data that needs
 // to be corrected differently, so they're better represented as standard errors.
-const makeAnalyzeInsertError = (tableTypeName: string) =>
+const makeAnalyzeInsertError = () =>
   EXPORTABLE(
-    (tableTypeName) =>
+    () =>
       function analyzeInsertErrorForConflictHandling(
         error: any
       ): ConflictDetails {
@@ -227,7 +227,7 @@ const makeAnalyzeInsertError = (tableTypeName: string) =>
         // GraphQL error with the original database error message.
         return null;
       },
-    [tableTypeName],
+    [],
     "pgInsertAnalyzeConstraintError"
   );
 
@@ -857,7 +857,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
             const tableTypeName = inflection.tableType(resource.codec);
 
             // Reuse the shared analyzer so constraint handling stays consistent across the plugin.
-            const analyzeInsertError = makeAnalyzeInsertError(tableTypeName);
+            const analyzeInsertError = makeAnalyzeInsertError();
 
             return build.extend(
               memo,
