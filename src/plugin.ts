@@ -18,9 +18,10 @@ import { DatabaseError } from "pg";
 /**
  * ErrorsAsDataPlugin
  *
- * This plugin provides enhanced create mutations that handle database constraint
- * violations gracefully using GraphQL union types instead of throwing errors.
- * This plugin only handles unique constraint and primary key violations.
+ * This plugin provides enhanced create mutations that handle database
+ * constraint violations gracefully using GraphQL union types instead of
+ * throwing errors. This plugin only handles unique constraint and primary key
+ * violations.
  *
  * When a constraint violation occurs, instead of returning a GraphQL error,
  * the mutation returns a union type that allows the client to discriminate
@@ -37,22 +38,21 @@ import { DatabaseError } from "pg";
  *     }
  *   }
  *
- * RATIONALE FOR SCOPE LIMITATION:
+ * Unique and primary key violations are handled as union types because they
+ * represent conflicts that clients might reasonably handle as part of normal
+ * application flow. When a username is already taken or an ISBN already
+ * exists, the client can take corrective action by retrying with different
+ * values. These violations are predictable and expected.
  *
- * Unique and primary key violations are handled as union types because they represent
- * conflicts that clients might reasonably handle as part of normal application flow.
- * When a username is already taken or an ISBN already exists, the client can take
- * corrective action by retrying with different values. These violations are predictable
- * and expected in multi-user applications.
- *
- * Other database errors, such as CHECK constraints, NOT NULL violations, and foreign
- * key violations, are intentionally not handled as union types. These errors indicate
- * invalid data or programming errors that should be caught during validation before
- * reaching the database. Standard GraphQL errors with detailed messages are more
- * appropriate for these exceptional cases, as they're not part of normal application
- * flow. For example, a CHECK constraint violation indicates the client sent
- * fundamentally invalid data (such as an empty string when non-empty is required),
- * which is better represented as a standard error rather than a union type conflict.
+ * Other database errors, such as CHECK constraints, NOT NULL violations, and
+ * foreign key violations, are intentionally not handled as union types. These
+ * errors indicate invalid data or programming errors that should be caught
+ * during validation before reaching the database. Standard GraphQL errors
+ * with detailed messages are more appropriate for these exceptional cases, as
+ * they're not part of normal application flow. For example, a CHECK constraint
+ * violation indicates the client sent fundamentally invalid data (such as an
+ * empty string when non-empty is required), which is better represented as a
+ * standard error rather than a union type conflict.
  */
 
 type StepType = {
@@ -70,30 +70,21 @@ function tagToString(
   return Array.isArray(str) ? str.join("\n") : str === true ? " " : str;
 }
 
-// SafePgInsertSingleStep extends PgInsertSingleStep to handle database constraint
-// violations gracefully by converting promise rejections into regular values.
-// This allows constraint errors to be processed as union type results rather than
-// being propagated to the GraphQL errors array.
-//
-// When a database constraint is violated (e.g., unique constraint, foreign key
-// violation), PostgreSQL raises an error. Without this wrapper, the error would
-// bubble up as a GraphQL error. By catching the rejection and returning the error
-// object as a value, we can inspect it in the plan phase and determine whether to
-// return the created record or conflict details.
+// SafePgInsertSingleStep extends PgInsertSingleStep to handle database
+// constraint violations gracefully by converting promise rejections into
+// regular values.
 class SafePgInsertSingleStep<
   TResource extends PgResource<any, any, any, any, any> = PgResource
 > extends PgInsertSingleStep<TResource> {
   async execute(details: ExecutionDetails): Promise<GrafastResultsList<any>> {
     const results = await super.execute(details);
 
-    // Map over the results to catch any rejected promises and convert them to values.
-    // This is critical for preventing database errors from reaching the GraphQL
-    // errors array.
+    // Map over the results to catch any rejected promises and convert them to
+    // values.
     return details.indexMap((i) => {
       const value = results[i];
       if (isPromiseLike(value)) {
-        // Catch promise rejections and return the error object as a regular value
-        // so it can be analyzed later in the plan phase.
+        // Prevent the promise rejection from propagating.
         return (value as Promise<any>).catch((error) => error);
       }
       return value;
@@ -101,8 +92,8 @@ class SafePgInsertSingleStep<
   }
 }
 
-// ConstraintInfo represents a database constraint that can cause insert conflicts.
-// This includes primary keys and unique constraints.
+// ConstraintInfo represents a database constraint that can cause insert
+// conflicts. This includes primary keys and unique constraints.
 interface ConstraintInfo {
   // Name of the constraint (e.g., "books_pkey", "unique_user_username").
   constraintName: string;
@@ -159,7 +150,8 @@ declare global {
         this: Inflection,
         resource: PgResource<any, any, any, any, any>
       ): string;
-      // Generate conflict type name for a specific constraint (e.g., "IsbnConflict").
+      // Generate conflict type name for a specific constraint (e.g.,
+      // "IsbnConflict").
       constraintConflictType(
         this: Inflection,
         constraintInfo: ConstraintInfo
@@ -173,12 +165,7 @@ declare global {
 }
 
 // isInsertable determines whether a given PostgreSQL resource (table/view) should
-// have create mutations generated for it. Resources are considered insertable if they:
-// - Are not parameterized (functions)
-// - Have attributes (columns)
-// - Are not polymorphic types
-// - Are not anonymous types
-// - Match the "resource:insert" behavior
+// have create mutations generated for it.
 const isInsertable = (
   build: GraphileBuild.Build,
   resource: PgResource<any, any, any, any, any>
@@ -190,9 +177,6 @@ const isInsertable = (
   return build.behavior.pgResourceMatches(resource, "resource:insert") === true;
 };
 
-// Type for the result of analyzing a database error.
-// Null means the error should propagate as a standard GraphQL error.
-// Non-null means the error should be handled as a union type conflict.
 type ConflictDetails = {
   message: string | null;
   constraint: string | null;
@@ -227,9 +211,6 @@ const makeAnalyzeInsertError = (tableTypeName: string) =>
       function analyzeInsertErrorForConflictHandling(
         error: any
       ): ConflictDetails {
-        // Only handle unique and primary key constraint violations as union types.
-        // Error code 23505 is unique_violation - the only one we convert into
-        // union type conflicts.
         if (
           error instanceof DatabaseError &&
           error.code === "23505" // unique_violation only
