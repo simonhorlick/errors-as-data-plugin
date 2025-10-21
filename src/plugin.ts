@@ -20,12 +20,11 @@ import { DatabaseError } from "pg";
  *
  * This plugin provides enhanced create mutations that handle database constraint
  * violations gracefully using GraphQL union types instead of throwing errors.
+ * This plugin only handles unique constraint and primary key violations.
  *
- * SCOPE: This plugin ONLY handles unique constraint and primary key violations.
- *
- * When a unique constraint or primary key violation occurs, instead of returning
- * a GraphQL error, the mutation returns a union type that allows the client to
- * discriminate between success and specific conflict types:
+ * When a constraint violation occurs, instead of returning a GraphQL error,
+ * the mutation returns a union type that allows the client to discriminate
+ * between success and specific conflict types:
  *
  * Example:
  *   mutation {
@@ -40,22 +39,20 @@ import { DatabaseError } from "pg";
  *
  * RATIONALE FOR SCOPE LIMITATION:
  *
- * Unique/Primary Key violations are handled as union types because:
- * - They represent conflicts that clients might reasonably handle (e.g., "username
- *   already taken, please choose another")
- * - Clients can take corrective action by retrying with different values
- * - The violation is predictable and part of normal application flow
+ * Unique and primary key violations are handled as union types because they represent
+ * conflicts that clients might reasonably handle as part of normal application flow.
+ * When a username is already taken or an ISBN already exists, the client can take
+ * corrective action by retrying with different values. These violations are predictable
+ * and expected in multi-user applications.
  *
- * Other database errors (CHECK constraints, NOT NULL, foreign key violations, etc.)
- * are NOT handled as union types because:
- * - They indicate invalid data or programming errors
- * - They should be caught during validation before reaching the database
- * - Standard GraphQL errors with detailed messages are more appropriate
- * - They're exceptional cases, not normal application flow
- *
- * For example, a CHECK constraint violation indicates the client sent fundamentally
- * invalid data (e.g., empty string when non-empty is required). This is better
- * represented as a standard error rather than a union type conflict.
+ * Other database errors, such as CHECK constraints, NOT NULL violations, and foreign
+ * key violations, are intentionally not handled as union types. These errors indicate
+ * invalid data or programming errors that should be caught during validation before
+ * reaching the database. Standard GraphQL errors with detailed messages are more
+ * appropriate for these exceptional cases, as they're not part of normal application
+ * flow. For example, a CHECK constraint violation indicates the client sent
+ * fundamentally invalid data (such as an empty string when non-empty is required),
+ * which is better represented as a standard error rather than a union type conflict.
  */
 
 type StepType = {
