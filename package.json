@@ -1,0 +1,40 @@
+{
+  "name": "errors-as-data-plugin",
+  "version": "1.0.0",
+  "description": "",
+  "license": "MIT",
+  "author": "Simon Horlick <simonhorlick@gmail.com>",
+  "main": "./dist/src/plugin.js",
+  "files": [
+    "dist/",
+    "src/",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepack": "npm run build",
+    "prestart": "npm run build",
+    "test": "vitest",
+    "start": "node ./dist/src/index.js"
+  },
+  "dependencies": {
+    "@dataplan/pg": "^0.0.1-beta.39",
+    "@pgsql/types": "^17.6.1",
+    "@types/supertest": "^6.0.3",
+    "fastify": "^5.6.1",
+    "graphile-build": "^5.0.0-beta.39",
+    "graphile-build-pg": "^5.0.0-beta.47",
+    "pgsql-parser": "^17.8.2",
+    "supertest": "^7.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.2",
+    "graphql": "^16.11.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "graphql": "^16.11.0",
+    "postgraphile": "^5.0.0-beta.49"
+  }
+}
