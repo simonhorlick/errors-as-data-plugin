@@ -1,42 +1,3 @@
-/**
- * ErrorsAsDataPlugin
- *
- * This plugin provides enhanced create mutations that handle database
- * constraint violations gracefully using GraphQL union types instead of
- * throwing errors. This plugin only handles unique constraint and primary key
- * violations.
- *
- * When a constraint violation occurs, instead of returning a GraphQL error,
- * the mutation returns a union type that allows the client to discriminate
- * between success and specific conflict types:
- *
- * Example:
- *   mutation {
- *     createBook(input: { book: { isbn: "123", title: "Foo" } }) {
- *       result {
- *         __typename
- *         ... on Book { isbn title }
- *         ... on BookIsbnConflict { message }
- *       }
- *     }
- *   }
- *
- * Unique and primary key violations are handled as union types because they
- * represent conflicts that clients might reasonably handle as part of normal
- * application flow. When a username is already taken or an ISBN already
- * exists, the client can take corrective action by retrying with different
- * values. These violations are predictable and expected.
- *
- * Other database errors, such as CHECK constraints, NOT NULL violations, and
- * foreign key violations, are intentionally not handled as union types. These
- * errors indicate invalid data or programming errors that should be caught
- * during validation before reaching the database. Standard GraphQL errors
- * with detailed messages are more appropriate for these exceptional cases, as
- * they're not part of normal application flow. For example, a CHECK constraint
- * violation indicates the client sent fundamentally invalid data (such as an
- * empty string when non-empty is required), which is better represented as a
- * standard error rather than a union type conflict.
- */
 import "graphile-config";
 
 import type { PgInsertSingleQueryBuilder, PgResource } from "@dataplan/pg";
@@ -114,7 +75,7 @@ declare global {
       ErrorsAsDataPlugin: true;
     }
     interface GatherHelpers {
-      pgMutationCreateWithConflicts: {
+      ErrorsAsDataPlugin: {
         getConstraintsForTable(tableName: string): ConstraintInfo[];
       };
     }
@@ -185,7 +146,7 @@ const postgresErrorUniqueViolationCode = "23505";
 
 // Determines whether a database error should be handled as a union type
 // conflict or allowed to propagate as a standard GraphQL error.
-const analyseInsertError = (error: any): ConflictDetails => {
+const analyseInsertError = (error: unknown): ConflictDetails => {
   if (
     error instanceof DatabaseError &&
     error.code === postgresErrorUniqueViolationCode
@@ -504,19 +465,51 @@ const registerPayloadType = (
   );
 };
 
-// ErrorsAsDataPlugin generates GraphQL create mutations that
-// return a union type of either the created record or conflict details, instead
-// of throwing errors when database constraints are violated.
-//
-// This plugin creates the following GraphQL types for each insertable resource:
-// - Input type: Defines the structure of data to be inserted
-// - Conflict types: One per constraint, detailing the violation
-// - Result union type: Union of the table type and conflict types
-// - Payload type: Wraps the result union with clientMutationId
-//
-// When an insert succeeds, the mutation returns the created record.
-// When a constraint is violated (e.g., unique constraint, foreign key), the mutation
-// returns conflict details instead of raising a GraphQL error.
+/**
+ * ErrorsAsDataPlugin
+ *
+ * This plugin provides enhanced create mutations that handle database
+ * constraint violations gracefully using GraphQL union types instead of
+ * throwing errors. This plugin only handles unique constraint and primary key
+ * violations.
+ *
+ * When a constraint violation occurs, instead of returning a GraphQL error,
+ * the mutation returns a union type that allows the client to discriminate
+ * between success and specific conflict types:
+ *
+ * Example:
+ *   mutation {
+ *     createBook(input: { book: { isbn: "123", title: "Foo" } }) {
+ *       result {
+ *         __typename
+ *         ... on Book { isbn title }
+ *         ... on BookIsbnConflict { message }
+ *       }
+ *     }
+ *   }
+ *
+ * Unique and primary key violations are handled as union types because they
+ * represent conflicts that clients might reasonably handle as part of normal
+ * application flow. When a username is already taken or an ISBN already
+ * exists, the client can take corrective action by retrying with different
+ * values. These violations are predictable and expected.
+ *
+ * Other database errors, such as CHECK constraints, NOT NULL violations, and
+ * foreign key violations, are intentionally not handled as union types. These
+ * errors indicate invalid data or programming errors that should be caught
+ * during validation before reaching the database. Standard GraphQL errors
+ * with detailed messages are more appropriate for these exceptional cases, as
+ * they're not part of normal application flow. For example, a CHECK constraint
+ * violation indicates the client sent fundamentally invalid data (such as an
+ * empty string when non-empty is required), which is better represented as a
+ * standard error rather than a union type conflict.
+ *
+ * This plugin creates the following GraphQL types for each insertable resource:
+ * - Input type: Defines the structure of data to be inserted
+ * - Conflict types: One per constraint, detailing the violation
+ * - Result union type: Union of the table type and conflict types
+ * - Payload type: Wraps the result union with clientMutationId
+ */
 export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
   name: "ErrorsAsDataPlugin",
   description:
@@ -524,35 +517,33 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
   version: "0.1.0",
   after: ["smart-tags"],
 
-  // Define custom inflection methods for generating consistent GraphQL type and field names.
-  // These methods are called by the plugin to create names for the various GraphQL
-  // constructs (input types, payload types, conflict types, etc.).
   inflection: {
     add: {
-      // Generate the mutation field name (e.g., "createBook").
-      createField(options, resource) {
+      // Generate the mutation field name (e.g. "createBook").
+      createField(_, resource) {
         return this.camelCase(`create-${this.tableType(resource.codec)}`);
       },
 
-      // Generate the input type name (e.g., "CreateBookInput").
-      createInputType(options, resource) {
+      // Generate the input type name (e.g. "CreateBookInput").
+      createInputType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-input`);
       },
 
-      // Generate the payload type name (e.g., "CreateBookPayload").
-      createPayloadType(options, resource) {
+      // Generate the payload type name (e.g. "CreateBookPayload").
+      createPayloadType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-payload`);
       },
 
-      // Generate the result union type name (e.g., "CreateBookResult").
-      createResultUnionType(options, resource) {
+      // Generate the result union type name (e.g. "CreateBookResult").
+      createResultUnionType(_, resource) {
         return this.upperCamelCase(`${this.createField(resource)}-result`);
       },
 
-      // Generate constraint-specific conflict type name based on the GraphQL type name
-      // and column names involved in the constraint (e.g., "BookIsbnConflict",
-      // "UserUsernameConflict"). This ensures uniqueness across tables.
-      constraintConflictType(options, constraintInfo) {
+      // Generate constraint-specific conflict type name based on the GraphQL
+      // type name and column names involved in the constraint (e.g.
+      // "BookIsbnConflict", "UserUsernameConflict"). This ensures uniqueness
+      // across tables.
+      constraintConflictType(_, constraintInfo) {
         // Use the GraphQL type name (singular form) stored in constraintInfo.
         // This is populated during schema generation to ensure consistency.
         const tableTypeName =
@@ -565,7 +556,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
       },
 
       // Generate the table field name used in the input type (e.g., "book").
-      tableFieldName(options, resource) {
+      tableFieldName(_, resource) {
         return this.camelCase(`${this.tableType(resource.codec)}`);
       },
     },
@@ -573,7 +564,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
 
   // Gather phase to collect constraint information from the database schema.
   gather: gatherConfig({
-    namespace: "pgMutationCreateWithConflicts",
+    namespace: "ErrorsAsDataPlugin",
     initialState: () => ({
       constraintsByTable: new Map<string, ConstraintInfo[]>(),
     }),
@@ -589,12 +580,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
     hooks: {
       pgIntrospection_introspection(info, event) {
-        const { introspection } = event;
-
-        // Iterate through all constraints and collect primary keys and unique constraints.
-        for (const pgConstraint of introspection.constraints) {
+        for (const pgConstraint of event.introspection.constraints) {
           // Only process primary key ('p') and unique ('u') constraints.
-          // These are the constraints that can cause insert conflicts.
           if (pgConstraint.contype !== "p" && pgConstraint.contype !== "u") {
             continue;
           }
@@ -646,7 +633,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     // Register custom behavior tags that control plugin functionality.
     behaviorRegistry: {
       add: {
-        // "insert:resource:select" allows selecting the inserted row in the mutation payload.
+        // "insert:resource:select" allows selecting the inserted row in the
+        // mutation payload.
         "insert:resource:select": {
           description:
             "can select the row that was inserted (on the mutation payload)",
@@ -662,7 +650,8 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
 
     // Configure default behaviors for PostgreSQL resources.
-    // This determines which resources automatically get insert mutations generated.
+    // This determines which resources automatically get insert mutations
+    // generated.
     entityBehavior: {
       pgResource: {
         inferred: {
@@ -692,13 +681,14 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
     },
 
     hooks: {
-      // The init hook runs during schema building and registers all the GraphQL types
-      // (input types, conflict types, union types, payload types) for insertable resources.
-      // This happens before the actual mutation fields are added to the schema.
-      init(_, build) {
+      // The init hook runs during schema building and registers all the
+      // GraphQL types (input types, conflict types, union types, payload
+      // types) for insertable resources.
+      init(input, build) {
         const { inflection } = build;
 
-        // Find all PostgreSQL resources that should have create mutations generated.
+        // Find all PostgreSQL resources that should have create mutations
+        // generated.
         const insertableResources = Object.values(build.pgResources).filter(
           (resource) => isInsertable(build, resource)
         );
@@ -715,8 +705,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
             const resultTypeName = inflection.createResultUnionType(resource);
             const payloadTypeName = inflection.createPayloadType(resource);
 
-            // Get the constraints for this table. We need to know the actual table name
-            // from the database, which is stored in the codec's name.
+            // Get the constraints for this table.
             const tableName = resource.codec.name;
             const constraints = (constraintsByTable.get(tableName) || []).map(
               (c: ConstraintInfo): ConstraintInfo => ({
@@ -762,11 +751,11 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
           });
         });
 
-        return _;
+        return input;
       },
 
-      // The GraphQLObjectType_fields hook adds the actual mutation fields to the schema.
-      // This runs after init, once all the types have been registered.
+      // The GraphQLObjectType_fields hook adds the actual mutation fields to
+      // the schema.
       GraphQLObjectType_fields(fields, build, context) {
         const {
           inflection,
@@ -823,12 +812,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                       resource.extensions?.tags?.deprecated
                     ),
 
-                    // The plan function executes during query planning and sets up the
-                    // steps needed to handle both successful inserts and constraint violations.
                     plan(_: any, args: FieldArgs) {
-                      // Create a SafePgInsertSingleStep to perform the database insert.
-                      // This custom step catches promise rejections and converts them
-                      // to regular values so errors don't propagate to the GraphQL errors array.
                       const $insert = new SafePgInsertSingleStep(
                         resource,
                         Object.create(null)
@@ -840,11 +824,14 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                         "input",
                         "clientMutationId",
                       ]);
-                      const $clientMutationId = lambda(
-                        $clientMutationIdInput,
-                        (value: any) => (value == null ? null : value),
-                        true
-                      );
+
+                      // // The value of the clientMutationId field.
+                      // const $clientMutationId = lambda(
+                      //   $clientMutationIdInput,
+                      //   (value: string | undefined) =>
+                      //     value == null ? null : value,
+                      //   true
+                      // );
 
                       // Apply the input arguments to the insert step.
                       args.apply($insert);
@@ -873,7 +860,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
                       //    - This was a successful insert, package the data normally
                       const $analyzed = lambda(
                         $inspection,
-                        (inspection: any) => {
+                        (inspection: unknown) => {
                           const errorDetails = analyseInsertError(inspection);
 
                           // Case 1: Handleable constraint violation (unique/primary key)
@@ -944,7 +931,7 @@ export const ErrorsAsDataPlugin: GraphileConfig.Plugin = {
 
                       // Build the final payload with clientMutationId and the result union.
                       const $payload = object({
-                        clientMutationId: $clientMutationId,
+                        clientMutationId: $clientMutationIdInput,
                         result: $result,
                       });
 
