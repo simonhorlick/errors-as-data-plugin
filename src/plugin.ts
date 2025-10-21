@@ -395,22 +395,17 @@ const registerResultUnionType = (
       // should be returned for a given result by examining the constraint name
       // in the error.
       planType($specifier: Step<StepType>) {
-        const $row = get($specifier, "row");
         const $conflict = get($specifier, "conflict");
         const $insert = get($specifier, "insert");
-        const $conflictMessage = get($conflict, "message");
         const $constraintName = get($conflict, "constraint");
 
         // Determine the __typename by examining the constraint name.
         // If there's a conflict, map the constraint name to the appropriate
-        // conflict type. Otherwise, return the table type for successful inserts.
+        // conflict type. Otherwise, return the table type for successful
+        // inserts.
         const $__typename = lambda(
-          list([$conflictMessage, $constraintName, $row]),
-          ([conflictMessage, constraintName, row]: readonly [
-            string | null,
-            string | null,
-            DatabaseError | { c: any; m: any; n: any; t: any }
-          ]) => {
+          list([$constraintName]),
+          ([constraintName]: readonly [string | null]) => {
             if (constraintName != null) {
               // Look up the constraint-specific type name.
               const conflictTypeName = constraintToTypeName.get(constraintName);
@@ -436,7 +431,7 @@ const registerResultUnionType = (
           // provides proper field access to the inserted row's columns.
           // For any conflict type, we return $conflict which contains the
           // constraint violation details.
-          planForType(t: any) {
+          planForType(t: GraphQLObjectType) {
             if (t.name === tableTypeName) {
               return $insert;
             }
