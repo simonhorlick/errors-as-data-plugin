@@ -1,7 +1,7 @@
 {
   "name": "errors-as-data-plugin",
-  "version": "1.0.0",
-  "description": "",
+  "version": "1.0.1",
+  "description": "A postgraphile plugin to expose unique and primary key violations as explicit error types",
   "license": "MIT",
   "author": "Simon Horlick <simonhorlick@gmail.com>",
   "main": "./dist/src/plugin.js",
